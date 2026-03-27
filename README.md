@@ -1,4 +1,4 @@
-# Genomics Encoder for CLIP (Masked Gene Pretraining)
+# Genomics Encoder for CLIP
 
 This repository implements a **genomics encoder** designed to be paired with an image encoder in a CLIP-style multimodal model. The encoder learns meaningful representations of mutation sets using **self-supervised masked gene prediction**.
 
