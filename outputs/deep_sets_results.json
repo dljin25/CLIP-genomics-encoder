@@ -1,6 +1,6 @@
 {
-  "model": "set_transformer",
-  "metadata_parquet": "metadata.parquet",
+  "model": "deep_sets",
+  "metadata_parquet": "data/metadata.parquet",
   "seed": 42,
   "device": "cpu",
   "num_rows_before_filtering": 190,
@@ -264,7 +264,7 @@
       "test_recall_at_k": 0.5555555555555556,
       "vocabulary_size": 68,
       "num_targets": 65,
-      "encoder_checkpoint": "outputs/genomics_text_encoder_runs/set_transformer_small_encoder.pt"
+      "encoder_checkpoint": "/Users/dljin/radiogenomics/CLIP-genomics-encoder/models/deep_sets_small_encoder.pt"
     }
   ]
 }

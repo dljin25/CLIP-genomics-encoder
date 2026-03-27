@@ -1,0 +1,8 @@
+*.pt
+*.pth
+__pycache__/
+.mypy_cache
+*.pyc
+.env
+.venv
+conda/

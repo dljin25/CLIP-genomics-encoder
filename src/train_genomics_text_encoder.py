@@ -457,7 +457,10 @@ def train_one_configuration(
         )
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    checkpoint_path = output_dir / f"{model_name}_{config.name}_encoder.pt"
+    project_root = Path(__file__).resolve().parent.parent
+    checkpoint_dir = project_root / "models" if model_name in {"deep_sets", "set_transformer"} else output_dir
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_path = checkpoint_dir / f"{model_name}_{config.name}_encoder.pt"
     torch.save(
         {
             "model_name": model_name,
@@ -498,13 +501,13 @@ def main() -> None:
     parser.add_argument("metadata_parquet", type=Path)
     parser.add_argument(
         "--model",
-        choices=("mean_pool", "set_transformer"),
+        choices=("deep_sets", "set_transformer"),
         default="set_transformer",
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("outputs/genomics_text_encoder_runs"),
+        default=Path("outputs"),
     )
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
