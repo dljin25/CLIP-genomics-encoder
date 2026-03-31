@@ -1,0 +1,80 @@
+project:
+  name: clip-genomics-encoder
+  task: masked-gene-prediction
+
+data:
+  raw:
+    gdc_parquet: data/raw/gdc.parquet
+    icgc_parquet: data/raw/icgc.parquet
+    icgc_tsv: data/raw/TableS3_panorama_driver_mutations_ICGC_samples.public.tsv.gz
+  processed:
+    pooled_parquet: data/processed/all.parquet
+  schema:
+    patient_id_column: patient_id
+    variant_sequence_column: variant_sequence
+    dataset_column: dataset
+    cancer_type_column: cancer_type
+  labels:
+    gdc_cancer_type: Kidney-RCC
+    unknown_cancer_type: unknown
+
+model:
+  choice: set_transformer
+  output_dim: 512
+  deep_sets:
+    training_overrides:
+      embedding_dim: 64
+      hidden_dim: 256
+      dropout: 0.1
+      learning_rate: 3e-4
+      weight_decay: 1e-4
+      max_genes: 16
+  set_transformer:
+    num_heads: 2
+    num_layers: 1
+    training_overrides:
+      embedding_dim: 64
+      hidden_dim: 256
+      dropout: 0.2
+      learning_rate: 3e-4
+      weight_decay: 1e-4
+      max_genes: 16
+
+training:
+  config_name: default
+  objective: binary_cross_entropy_with_logits
+  batch_size: 32
+  epochs: 30
+  learning_rate: 3e-4
+  weight_decay: 1e-4
+  min_frequency: 3
+  recall_at_k: 10
+  mask_probability: 0.15
+  max_genes: 16
+  embedding_dim: 64
+  hidden_dim: 256
+  dropout: 0.1
+
+splits:
+  strategy: stratified_by_cancer_type
+  unit: patient
+  patient_key: dataset:patient_id
+  stratify_column: cancer_type
+  train_fraction: 0.70
+  val_fraction: 0.15
+  test_fraction: 0.15
+
+runtime:
+  seed: 42
+  device: auto
+
+outputs:
+  runs_dir: outputs/runs
+  checkpoints_dir: outputs/checkpoints
+  results_filename_template: "{model}_results.json"
+  checkpoint_filename_template: "{model}_{config_name}_encoder.pt"
+
+build_parquet:
+  drop_missing_variant_sequence: true
+  trim_string_columns: true
+  fill_unknown_cancer_type: true

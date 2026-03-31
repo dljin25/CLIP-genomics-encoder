@@ -3,6 +3,7 @@
 __pycache__/
 .mypy_cache
 *.pyc
-.env
-.venv
-conda/
+*.maf.gz
+*.maf
+*.tsv.gz
+*.tsv

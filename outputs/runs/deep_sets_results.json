@@ -1,0 +1,311 @@
+{
+  "model": "deep_sets",
+  "config_path": "/Users/dljin/radiogenomics/CLIP-genomics-encoder/config.yaml",
+  "input_parquet": "/Users/dljin/radiogenomics/CLIP-genomics-encoder/data/processed/all.parquet",
+  "seed": 42,
+  "device": "cpu",
+  "num_rows": 1744,
+  "rows_by_dataset": {
+    "gdc": 131,
+    "icgc": 1613
+  },
+  "rows_by_cancer_type": {
+    "Biliary-AdenoCA": 30,
+    "Bone-Cart": 7,
+    "Bone-Epith": 9,
+    "Bone-Osteosarc": 32,
+    "Breast-AdenoCa": 107,
+    "Breast-DCIS": 3,
+    "Breast-LobularCa": 7,
+    "CNS-Medullo": 95,
+    "CNS-PiloAstro": 89,
+    "Eso-AdenoCa": 95,
+    "Head-SCC": 13,
+    "Kidney-RCC": 200,
+    "Liver-HCC": 246,
+    "Lymph-BNHL": 96,
+    "Lymph-CLL": 67,
+    "Lymph-NOS": 2,
+    "Myeloid-AML": 12,
+    "Myeloid-MDS": 1,
+    "Myeloid-MPN": 10,
+    "Ovary-AdenoCA": 69,
+    "Panc-AdenoCA": 230,
+    "Panc-Endocrine": 62,
+    "Prost-AdenoCA": 168,
+    "Skin-Melanoma": 69,
+    "Stomach-AdenoCA": 25
+  },
+  "train_size": 1211,
+  "val_size": 252,
+  "test_size": 281,
+  "runs": [
+    {
+      "config": {
+        "name": "default",
+        "learning_rate": 0.0003,
+        "weight_decay": 0.0001,
+        "batch_size": 32,
+        "epochs": 30,
+        "min_frequency": 3,
+        "recall_at_k": 10,
+        "mask_probability": 0.15,
+        "max_genes": 16,
+        "embedding_dim": 64,
+        "hidden_dim": 256,
+        "dropout": 0.1,
+        "num_heads": 8,
+        "num_layers": 2,
+        "output_dim": 512,
+        "pooling": null
+      },
+      "train_stats": {
+        "num_train_rows": 1211,
+        "num_unique_train_patients": 1211,
+        "train_rows_by_dataset": {
+          "gdc": 94,
+          "icgc": 1117
+        },
+        "vocab_size": 385,
+        "avg_genes_per_sample": 6.8596201486374895,
+        "median_genes_per_sample": 4.0,
+        "max_genes_per_sample": 272,
+        "top_10_genes": {
+          "tp53": 442,
+          "cdkn2a": 234,
+          "kras": 166, 
+          "arid1a": 148,
+          "pten": 120,
+          "cdkn2b": 119,
+          "smad4": 96,
+          "braf": 91,
+          "tert": 88,
+          "vhl": 86
+        }
+      },
+      "history": [
+        {
+          "epoch": 1,
+          "train_loss": 0.6196690170258948,
+          "train_recall_at_k": 0.08612040133779264,
+          "val_loss": 0.6687721657374549,
+          "val_recall_at_k": 0.05714285714285714
+        },
+        {
+          "epoch": 2,
+          "train_loss": 0.5756246504165435,
+          "train_recall_at_k": 0.1350334448160535,
+          "val_loss": 0.5805161377740284,
+          "val_recall_at_k": 0.09387755102040816
+        },
+        {
+          "epoch": 3,
+          "train_loss": 0.5373542623811276,
+          "train_recall_at_k": 0.11663879598662208,
+          "val_loss": 0.6298663455342489,
+          "val_recall_at_k": 0.08775510204081632
+        },
+        {
+          "epoch": 4,
+          "train_loss": 0.5055792330465073,
+          "train_recall_at_k": 0.13949275362318841,
+          "val_loss": 0.62514985553802,
+          "val_recall_at_k": 0.07142857142857142
+        },
+        {
+          "epoch": 5,
+          "train_loss": 0.49458368512641093,
+          "train_recall_at_k": 0.19384057971014493,
+          "val_loss": 0.5738730572518849,
+          "val_recall_at_k": 0.12857142857142856
+        },
+        {
+          "epoch": 6,
+          "train_loss": 0.47028173108813587,
+          "train_recall_at_k": 0.18603678929765885,
+          "val_loss": 0.6701907723669022,
+          "val_recall_at_k": 0.1489795918367347
+        },
+        {
+          "epoch": 7,
+          "train_loss": 0.43548394184679556,
+          "train_recall_at_k": 0.24832775919732442,
+          "val_loss": 0.6108080564983307,
+          "val_recall_at_k": 0.17551020408163265
+        },
+        {
+          "epoch": 8,
+          "train_loss": 0.4346400190492389,
+          "train_recall_at_k": 0.2591973244147157,
+          "val_loss": 0.5882137786774408,
+          "val_recall_at_k": 0.1816326530612245
+        },
+        {
+          "epoch": 9,
+          "train_loss": 0.4089129628916598,
+          "train_recall_at_k": 0.2968227424749164,
+          "val_loss": 0.5991878093235077,
+          "val_recall_at_k": 0.18979591836734694
+        },
+        {
+          "epoch": 10,
+          "train_loss": 0.39045938340028785,
+          "train_recall_at_k": 0.318561872909699,
+          "val_loss": 0.6019500219632709,
+          "val_recall_at_k": 0.20816326530612245
+        },
+        {
+          "epoch": 11,
+          "train_loss": 0.37789539765169755,
+          "train_recall_at_k": 0.3311036789297659,
+          "val_loss": 0.5722868414152236,
+          "val_recall_at_k": 0.2163265306122449
+        },
+        {
+          "epoch": 12,
+          "train_loss": 0.3562805763361968,
+          "train_recall_at_k": 0.35075250836120403,
+          "val_loss": 0.5461505064888607,
+          "val_recall_at_k": 0.26326530612244897
+        },
+        {
+          "epoch": 13,
+          "train_loss": 0.3559743999991901,
+          "train_recall_at_k": 0.32148829431438125,
+          "val_loss": 0.609294144880204,
+          "val_recall_at_k": 0.22040816326530613
+        },
+        {
+          "epoch": 14,
+          "train_loss": 0.3385688023661701,
+          "train_recall_at_k": 0.35228539576365664,
+          "val_loss": 0.6192148204833742,
+          "val_recall_at_k": 0.24489795918367346
+        },
+        {
+          "epoch": 15,
+          "train_loss": 0.33120605716224943,
+          "train_recall_at_k": 0.3612040133779264,
+          "val_loss": 0.583251244492001,
+          "val_recall_at_k": 0.23469387755102042
+        },
+        {
+          "epoch": 16,
+          "train_loss": 0.31268491098252726,
+          "train_recall_at_k": 0.3782051282051282,
+          "val_loss": 0.5806488366354079,
+          "val_recall_at_k": 0.2816326530612245
+        },
+        {
+          "epoch": 17,
+          "train_loss": 0.3033765062480599,
+          "train_recall_at_k": 0.4059364548494983,
+          "val_loss": 0.6918740755035764,
+          "val_recall_at_k": 0.23265306122448978
+        },
+        {
+          "epoch": 18,
+          "train_loss": 0.29462012961125394,
+          "train_recall_at_k": 0.3907469342251951,
+          "val_loss": 0.6245401473272414,
+          "val_recall_at_k": 0.2612244897959184
+        },
+        {
+          "epoch": 19,
+          "train_loss": 0.2704816104753464,
+          "train_recall_at_k": 0.4214046822742475,
+          "val_loss": 0.6526449114557297,
+          "val_recall_at_k": 0.28775510204081634
+        },
+        {
+          "epoch": 20,
+          "train_loss": 0.2729516690127816,
+          "train_recall_at_k": 0.38377926421404684,
+          "val_loss": 0.6475577316586933,
+          "val_recall_at_k": 0.22244897959183674
+        },
+        {
+          "epoch": 21,
+          "train_loss": 0.28112725393029897,
+          "train_recall_at_k": 0.41847826086956524,
+          "val_loss": 0.6412441957564581,
+          "val_recall_at_k": 0.25918367346938775
+        },
+        {
+          "epoch": 22,
+          "train_loss": 0.2644670502544926,
+          "train_recall_at_k": 0.4322742474916388,
+          "val_loss": 0.6777738011072553,
+          "val_recall_at_k": 0.2653061224489796
+        },
+        {
+          "epoch": 23,
+          "train_loss": 0.26169635706160504,
+          "train_recall_at_k": 0.3896321070234114,
+          "val_loss": 0.6505425014193096,
+          "val_recall_at_k": 0.25918367346938775
+        },
+        {
+          "epoch": 24,
+          "train_loss": 0.26220560201822873,
+          "train_recall_at_k": 0.4397993311036789,
+          "val_loss": 0.7156755980991182,
+          "val_recall_at_k": 0.2816326530612245
+        },
+        {
+          "epoch": 25,
+          "train_loss": 0.25228428149105203,
+          "train_recall_at_k": 0.463628762541806,
+          "val_loss": 0.5323706240881056,
+          "val_recall_at_k": 0.29591836734693877
+        },
+        {
+          "epoch": 26,
+          "train_loss": 0.24320072181750485,
+          "train_recall_at_k": 0.4779821627647714,
+          "val_loss": 0.6965806503144522,
+          "val_recall_at_k": 0.2857142857142857
+        },
+        {
+          "epoch": 27,
+          "train_loss": 0.23785387869219854,
+          "train_recall_at_k": 0.5012541806020067,
+          "val_loss": 0.7070477179118565,
+          "val_recall_at_k": 0.2857142857142857
+        },
+        {
+          "epoch": 28,
+          "train_loss": 0.2346609898532943,
+          "train_recall_at_k": 0.48104793756967673,
+          "val_loss": 0.6092496088572911,
+          "val_recall_at_k": 0.2836734693877551
+        },
+        {
+          "epoch": 29,
+          "train_loss": 0.22299549138614896,
+          "train_recall_at_k": 0.4782608695652174,
+          "val_loss": 0.7259627069745745,
+          "val_recall_at_k": 0.2897959183673469
+        },
+        {
+          "epoch": 30,
+          "train_loss": 0.22587171977064416,
+          "train_recall_at_k": 0.49108138238573024,
+          "val_loss": 0.6441282081225562,
+          "val_recall_at_k": 0.336734693877551
+        }
+      ],
+      "checkpoint_selection_metric": "val_recall_at_k",
+      "best_checkpoint_epoch": 30,
+      "best_checkpoint_val_loss": 0.6441282081225562,
+      "best_checkpoint_val_recall_at_k": 0.336734693877551,
+      "best_checkpoint_train_loss": 0.22587171977064416,
+      "best_checkpoint_train_recall_at_k": 0.49108138238573024,
+      "test_loss": 0.8258370602258159,
+      "test_recall_at_k": 0.28832116788321166,
+      "vocabulary_size": 385,
+      "num_targets": 382,
+      "encoder_checkpoint": "/Users/dljin/radiogenomics/CLIP-genomics-encoder/outputs/checkpoints/deep_sets_default_encoder.pt"
+    }
+  ]
+}

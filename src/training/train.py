@@ -6,17 +6,29 @@ import math
 import random
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 
-from gene_vocabulary import GeneVocabulary, GenomicsParquetDataset
-from genomics_deep_sets_encoder import DeepSetsEncoder
-from genomics_set_transformer_encoder import SetTransformerEncoder
+from src.data.build_gene_vocabulary import GeneVocabulary
+from src.data.tokenize_gene_dataset import TokenizedGeneSetDataset
+from src.models.deep_sets import DeepSetsEncoder
+from src.models.set_transformer import SetTransformerEncoder
+from src.project_config import load_project_config, resolve_project_path
 
-OUTPUT_DIM = 512
+PROJECT = load_project_config()
+SCHEMA = PROJECT["data"]["schema"]
+PATIENT_ID = SCHEMA["patient_id_column"]
+VARIANT_SEQUENCE = SCHEMA["variant_sequence_column"]
+DATASET = SCHEMA["dataset_column"]
+CANCER_TYPE = SCHEMA["cancer_type_column"]
+DEFAULT_MIN_FREQUENCY = PROJECT["training"]["min_frequency"]
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
 
 @dataclass(frozen=True)
 class TrainingConfig:
@@ -25,31 +37,51 @@ class TrainingConfig:
     weight_decay: float
     batch_size: int
     epochs: int
-    min_frequency: int = 3              # tweak?
+    min_frequency: int = DEFAULT_MIN_FREQUENCY
     recall_at_k: int = 10
-    mask_probability: float = 0.15      # tweak?
+    mask_probability: float = 0.15
     max_genes: int = 256
     embedding_dim: int = 256
     hidden_dim: int = 1024
     dropout: float = 0.1
     num_heads: int = 8
     num_layers: int = 2
+    output_dim: int = 512
+    pooling: str | None = "mean"
 
 
-DEFAULT_CONFIGS = (
-    TrainingConfig(
-        name="small",
-        learning_rate=3e-4,             # tweak?
-        weight_decay=1e-4,
-        batch_size=32,
-        epochs=30,                      # tweak?
-        embedding_dim=128,
-        hidden_dim=512,
-        dropout=0.1,
-        num_heads=4,
-        num_layers=2,
-    ),
-)
+def build_training_config(
+    project_config: dict[str, Any],
+    *,
+    model_name: str,
+) -> TrainingConfig:
+    model_config = project_config["model"]
+    training_config = project_config["training"]
+    model_specific = model_config.get(model_name, {})
+    training_overrides = model_specific.get("training_overrides", {})
+
+    resolved_training = {
+        **training_config,
+        **training_overrides,
+    }
+    return TrainingConfig(
+        name=resolved_training.get("config_name", "default"),
+        learning_rate=resolved_training["learning_rate"],
+        weight_decay=resolved_training["weight_decay"],
+        batch_size=resolved_training["batch_size"],
+        epochs=resolved_training["epochs"],
+        min_frequency=resolved_training["min_frequency"],
+        recall_at_k=resolved_training["recall_at_k"],
+        mask_probability=resolved_training["mask_probability"],
+        max_genes=resolved_training["max_genes"],
+        embedding_dim=resolved_training["embedding_dim"],
+        hidden_dim=resolved_training["hidden_dim"],
+        dropout=resolved_training["dropout"],
+        num_heads=model_specific.get("num_heads", 8),
+        num_layers=model_specific.get("num_layers", 2),
+        output_dim=model_config["output_dim"],
+        pooling=model_specific.get("pooling") if model_name == "deep_sets" else None,
+    )
 
 
 class MaskedGeneSetDataset(Dataset[dict[str, torch.Tensor]]):
@@ -61,7 +93,6 @@ class MaskedGeneSetDataset(Dataset[dict[str, torch.Tensor]]):
         max_genes: int,
         mask_probability: float,
     ) -> None:
-        
         self.dataframe = dataframe.reset_index(drop=True)
         self.vocabulary = vocabulary
         self.max_genes = max_genes
@@ -75,13 +106,13 @@ class MaskedGeneSetDataset(Dataset[dict[str, torch.Tensor]]):
         return len(self.dataframe)
 
     def __getitem__(self, index: int) -> dict[str, torch.Tensor]:
-        row = self.dataframe.iloc[index] 
-        genes = GenomicsParquetDataset.parse_variant_sequence(row["variant_sequence"]) # read the patient's variant_sequence 
-        token_ids = self.vocabulary.encode(genes, self.max_genes) # encodes into fixed-length token_ids
+        row = self.dataframe.iloc[index]
+        genes = TokenizedGeneSetDataset.parse_variant_sequence(row[VARIANT_SEQUENCE])
+        token_ids = self.vocabulary.encode(genes, self.max_genes)
         input_token_ids = token_ids.clone()
-        attention_mask = (token_ids != self.vocabulary.pad_index).long() # attention mask is created so that all non-pad positions are 1, pad positions are 0
+        attention_mask = (token_ids != self.vocabulary.pad_index).long()
 
-        non_pad_positions = torch.nonzero(token_ids != self.vocabulary.pad_index, as_tuple=False).flatten() 
+        non_pad_positions = torch.nonzero(token_ids != self.vocabulary.pad_index, as_tuple=False).flatten()
         if non_pad_positions.numel() == 0:
             raise ValueError("Encountered an empty mutation set after filtering.")
 
@@ -91,20 +122,18 @@ class MaskedGeneSetDataset(Dataset[dict[str, torch.Tensor]]):
             & (token_ids != self.vocabulary.mask_index),
             as_tuple=False,
         ).flatten()
-        mask_source_positions = known_gene_positions
-        if mask_source_positions.numel() == 0:
-            mask_source_positions = non_pad_positions
+        mask_source_positions = known_gene_positions if known_gene_positions.numel() > 0 else non_pad_positions
 
-        num_masked = min( 
-            max(1, math.ceil(mask_source_positions.numel() * self.mask_probability)), # never mask padding, but mask at least 1 gene when possible
+        num_masked = min(
+            max(1, math.ceil(mask_source_positions.numel() * self.mask_probability)),
             int(mask_source_positions.numel()),
         )
         permutation = torch.randperm(mask_source_positions.numel())
-        masked_positions = mask_source_positions[permutation[:num_masked]] 
+        masked_positions = mask_source_positions[permutation[:num_masked]]
         masked_token_ids = token_ids[masked_positions]
-        input_token_ids[masked_positions] = self.vocabulary.mask_index # replace select positions in input_token_ids with [MASK] token
+        input_token_ids[masked_positions] = self.vocabulary.mask_index
 
-        target_multihot = torch.zeros(len(self.target_gene_ids), dtype=torch.float32) # mark only the masked genes as positive
+        target_multihot = torch.zeros(len(self.target_gene_ids), dtype=torch.float32)
         for token_id in masked_token_ids.tolist():
             target_index = self.target_index_by_token_id.get(token_id)
             if target_index is not None:
@@ -118,8 +147,6 @@ class MaskedGeneSetDataset(Dataset[dict[str, torch.Tensor]]):
 
 
 class MaskedGenePredictor(nn.Module):
-    """Predicts masked genes from the encoder embedding."""
-
     def __init__(self, encoder: nn.Module, output_dim: int, vocabulary: GeneVocabulary) -> None:
         super().__init__()
         self.encoder = encoder
@@ -145,63 +172,98 @@ def set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
+def build_patient_split_key(row: pd.Series) -> str:
+    return f"{row[DATASET]}:{row[PATIENT_ID]}"
+
+
+def compute_split_counts(
+    total_count: int,
+    *,
+    train_fraction: float,
+    val_fraction: float,
+) -> tuple[int, int, int]:
+
+    n_train = int(total_count * train_fraction)
+    n_val = int(total_count * val_fraction)
+    n_test = total_count - n_train - n_val
+    return n_train, n_val, n_test
+
+
 def split_dataframe(
     dataframe: pd.DataFrame,
     *,
     seed: int,
     train_fraction: float = 0.70,
     val_fraction: float = 0.15,
+    unknown_cancer_type: str = "unknown",
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    
-    patient_ids = list(pd.unique(dataframe["patient_id"]))
-    rng = random.Random(seed)
-    rng.shuffle(patient_ids)
+    keyed_dataframe = dataframe.copy()
+    keyed_dataframe["_patient_split_key"] = keyed_dataframe.apply(build_patient_split_key, axis=1)
+    keyed_dataframe["_stratify_label"] = keyed_dataframe[CANCER_TYPE].fillna(unknown_cancer_type).astype("string").str.strip()
 
-    n_total = len(patient_ids)
-    n_train = int(n_total * train_fraction)
-    n_val = int(n_total * val_fraction)
-    train_ids = set(patient_ids[:n_train])
-    val_ids = set(patient_ids[n_train:n_train + n_val])
-    test_ids = set(patient_ids[n_train + n_val:])
+    train_ids: set[str] = set()
+    val_ids: set[str] = set()
+    test_ids: set[str] = set()
+    rng = random.Random(seed)
+
+    for _, group in keyed_dataframe.groupby("_stratify_label", sort=True):
+        patient_keys = list(pd.unique(group["_patient_split_key"]))
+        rng.shuffle(patient_keys)
+        n_train, n_val, n_test = compute_split_counts(
+            len(patient_keys),
+            train_fraction=train_fraction,
+            val_fraction=val_fraction,
+        )
+        train_ids.update(patient_keys[:n_train])
+        val_ids.update(patient_keys[n_train:n_train + n_val])
+        test_ids.update(patient_keys[n_train + n_val:n_train + n_val + n_test])
 
     return (
-        dataframe[dataframe["patient_id"].isin(train_ids)].reset_index(drop=True),
-        dataframe[dataframe["patient_id"].isin(val_ids)].reset_index(drop=True),
-        dataframe[dataframe["patient_id"].isin(test_ids)].reset_index(drop=True),
+        keyed_dataframe[keyed_dataframe["_patient_split_key"].isin(train_ids)].drop(columns=["_patient_split_key", "_stratify_label"]).reset_index(drop=True),
+        keyed_dataframe[keyed_dataframe["_patient_split_key"].isin(val_ids)].drop(columns=["_patient_split_key", "_stratify_label"]).reset_index(drop=True),
+        keyed_dataframe[keyed_dataframe["_patient_split_key"].isin(test_ids)].drop(columns=["_patient_split_key", "_stratify_label"]).reset_index(drop=True),
     )
+
+
+def summarize_counts(dataframe: pd.DataFrame, column_name: str) -> dict[str, int]:
+    return {
+        str(name): int(count)
+        for name, count in dataframe[column_name].value_counts().sort_index().items()
+    }
 
 
 def compute_train_stats(
     dataframe: pd.DataFrame,
     vocabulary: GeneVocabulary,
 ) -> dict[str, object]:
-    
-    gene_lists = [GenomicsParquetDataset.parse_variant_sequence(value) for value in dataframe["variant_sequence"]]
+    gene_lists = [TokenizedGeneSetDataset.parse_variant_sequence(value) for value in dataframe[VARIANT_SEQUENCE]]
     gene_counts = [len(genes) for genes in gene_lists]
     flattened = [gene.lower() for genes in gene_lists for gene in genes]
     top_genes = pd.Series(flattened).value_counts().head(10).to_dict() if flattened else {}
     return {
         "num_train_rows": len(dataframe),
-        "num_unique_train_patients": int(dataframe["patient_id"].nunique()) if "patient_id" in dataframe.columns else None,
+        "num_unique_train_patients": int(dataframe.apply(build_patient_split_key, axis=1).nunique()),
+        "train_rows_by_dataset": summarize_counts(dataframe, DATASET),
         "vocab_size": len(vocabulary),
         "avg_genes_per_sample": float(sum(gene_counts) / len(gene_counts)) if gene_counts else 0.0,
         "median_genes_per_sample": float(pd.Series(gene_counts).median()) if gene_counts else 0.0,
         "max_genes_per_sample": max(gene_counts) if gene_counts else 0,
         "top_10_genes": top_genes,
     }
+
+
 def build_encoder(
     model_name: str,
     vocabulary: GeneVocabulary,
     config: TrainingConfig,
 ) -> nn.Module:
-    if model_name == "mean_pool":
+    if model_name == "deep_sets":
         return DeepSetsEncoder(
             vocab_size=len(vocabulary),
             embedding_dim=config.embedding_dim,
             hidden_dim=config.hidden_dim,
-            output_dim=OUTPUT_DIM,
+            output_dim=config.output_dim,
             pad_index=vocabulary.pad_index,
-            pooling="mean",
             dropout=config.dropout,
         )
     return SetTransformerEncoder(
@@ -210,7 +272,7 @@ def build_encoder(
         num_heads=config.num_heads,
         num_layers=config.num_layers,
         hidden_dim=config.hidden_dim,
-        output_dim=OUTPUT_DIM,
+        output_dim=config.output_dim,
         pad_index=vocabulary.pad_index,
         dropout=config.dropout,
     )
@@ -288,7 +350,7 @@ def compute_masked_gene_loss(
     )
 
 
-def compute_pos_weight( # pos_weight changes loss so that positive labels are weighted far more
+def compute_pos_weight(
     dataframe: pd.DataFrame,
     vocabulary: GeneVocabulary,
 ) -> torch.Tensor:
@@ -298,8 +360,8 @@ def compute_pos_weight( # pos_weight changes loss so that positive labels are we
     }
     positive_counts = torch.zeros(len(target_gene_ids), dtype=torch.float32)
 
-    for value in dataframe["variant_sequence"]:
-        genes = GenomicsParquetDataset.parse_variant_sequence(value)
+    for value in dataframe[VARIANT_SEQUENCE]:
+        genes = TokenizedGeneSetDataset.parse_variant_sequence(value)
         present_token_ids = {
             vocabulary.token_to_id[gene.upper()]
             for gene in genes
@@ -370,10 +432,11 @@ def train_one_configuration(
     *,
     config: TrainingConfig,
     device: torch.device,
-    output_dir: Path,
+    checkpoint_dir: Path,
+    checkpoint_filename_template: str,
 ) -> dict[str, object]:
     vocabulary = GeneVocabulary.build(
-        (GenomicsParquetDataset.parse_variant_sequence(value) for value in train_df["variant_sequence"]),
+        (TokenizedGeneSetDataset.parse_variant_sequence(value) for value in train_df[VARIANT_SEQUENCE]),
         min_frequency=config.min_frequency,
     )
     target_gene_ids = vocabulary.gene_token_ids()
@@ -388,7 +451,7 @@ def train_one_configuration(
     )
 
     encoder = build_encoder(model_name, vocabulary, config).to(device)
-    model = MaskedGenePredictor(encoder, output_dim=OUTPUT_DIM, vocabulary=vocabulary).to(device)
+    model = MaskedGenePredictor(encoder, output_dim=config.output_dim, vocabulary=vocabulary).to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=config.learning_rate,
@@ -396,9 +459,9 @@ def train_one_configuration(
     )
 
     history: list[dict[str, float]] = []
-    best_val_loss = float("inf")
     best_val_recall_at_k = float("-inf")
     best_state: dict[str, torch.Tensor] | None = None
+    best_checkpoint_metrics: dict[str, float] | None = None
 
     for epoch in range(1, config.epochs + 1):
         _ = run_epoch(
@@ -417,7 +480,7 @@ def train_one_configuration(
                 device=device,
                 recall_at_k=config.recall_at_k,
                 pos_weight=pos_weight,
-            )   
+            )
             val_metrics = run_epoch(
                 model,
                 val_loader,
@@ -439,10 +502,16 @@ def train_one_configuration(
 
         if val_metrics["recall_at_k"] > best_val_recall_at_k:
             best_val_recall_at_k = val_metrics["recall_at_k"]
-            best_val_loss = val_metrics["loss"]
+            best_checkpoint_metrics = {
+                "epoch": float(epoch),
+                "val_loss": val_metrics["loss"],
+                "val_recall_at_k": val_metrics["recall_at_k"],
+                "train_loss": train_metrics["loss"],
+                "train_recall_at_k": train_metrics["recall_at_k"],
+            }
             best_state = {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
 
-    if best_state is None:
+    if best_state is None or best_checkpoint_metrics is None:
         raise RuntimeError("Training did not produce a checkpoint.")
 
     model.load_state_dict(best_state)
@@ -456,11 +525,11 @@ def train_one_configuration(
             pos_weight=pos_weight,
         )
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    project_root = Path(__file__).resolve().parent.parent
-    checkpoint_dir = project_root / "models" if model_name in {"deep_sets", "set_transformer"} else output_dir
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    checkpoint_path = checkpoint_dir / f"{model_name}_{config.name}_encoder.pt"
+    checkpoint_path = checkpoint_dir / checkpoint_filename_template.format(
+        model=model_name,
+        config_name=config.name,
+    )
     torch.save(
         {
             "model_name": model_name,
@@ -470,7 +539,7 @@ def train_one_configuration(
             "pad_index": vocabulary.pad_index,
             "unk_index": vocabulary.unk_index,
             "mask_index": vocabulary.mask_index,
-            "output_dim": OUTPUT_DIM,
+            "output_dim": config.output_dim,
         },
         checkpoint_path,
     )
@@ -479,8 +548,12 @@ def train_one_configuration(
         "config": asdict(config),
         "train_stats": train_stats,
         "history": history,
-        "best_val_loss": best_val_loss,
-        "best_val_recall_at_k": best_val_recall_at_k,
+        "checkpoint_selection_metric": "val_recall_at_k",
+        "best_checkpoint_epoch": int(best_checkpoint_metrics["epoch"]),
+        "best_checkpoint_val_loss": best_checkpoint_metrics["val_loss"],
+        "best_checkpoint_val_recall_at_k": best_checkpoint_metrics["val_recall_at_k"],
+        "best_checkpoint_train_loss": best_checkpoint_metrics["train_loss"],
+        "best_checkpoint_train_recall_at_k": best_checkpoint_metrics["train_recall_at_k"],
         "test_loss": test_metrics["loss"],
         "test_recall_at_k": test_metrics["recall_at_k"],
         "vocabulary_size": len(vocabulary),
@@ -494,45 +567,94 @@ def save_json(data: dict[str, object], output_path: Path) -> None:
     output_path.write_text(json.dumps(data, indent=2))
 
 
+def load_training_config(config_path: str | Path) -> tuple[dict[str, Any], TrainingConfig]:
+    project_config = load_project_config(config_path)
+    split_config = project_config["splits"]
+    model_choice = project_config["model"]["choice"]
+    runtime_config = build_training_config(project_config, model_name=model_choice)
+    project_config["_resolved_model_choice"] = model_choice
+    project_config["_resolved_split_config"] = split_config
+    return project_config, runtime_config
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Train a genomics text encoder from metadata.parquet with 70/15/15 splits."
+        description="Train a genomics encoder from a processed pooled parquet."
     )
-    parser.add_argument("metadata_parquet", type=Path)
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=PROJECT_ROOT / "config.yaml",
+        help="Project config file. Defaults to config.yaml in the repo root.",
+    )
+    preliminary_args, _ = parser.parse_known_args()
+    project_config, default_training_config = load_training_config(preliminary_args.config)
+    data_config = project_config["data"]
+    output_config = project_config["outputs"]
+    runtime_config = project_config["runtime"]
+    split_config = project_config["_resolved_split_config"]
+    label_config = data_config["labels"]
+
+    default_input_parquet = resolve_project_path(data_config["processed"]["pooled_parquet"])
+    default_output_dir = resolve_project_path(output_config["runs_dir"])
+    default_checkpoint_dir = resolve_project_path(output_config["checkpoints_dir"])
+
+    parser = argparse.ArgumentParser(
+        description="Train a genomics encoder from a processed pooled parquet."
+    )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=PROJECT_ROOT / "config.yaml",
+        help="Project config file. Defaults to config.yaml in the repo root.",
+    )
+    parser.add_argument(
+        "input_parquet",
+        nargs="?",
+        type=Path,
+        default=default_input_parquet,
+        help="Processed pooled parquet created by src/data/build_parquet.py.",
+    )
     parser.add_argument(
         "--model",
         choices=("deep_sets", "set_transformer"),
-        default="set_transformer",
+        default=project_config["_resolved_model_choice"],
     )
-    parser.add_argument(
-        "--output-dir",
-        type=Path,
-        default=Path("outputs"),
-    )
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--output-dir", type=Path, default=default_output_dir)
+    parser.add_argument("--checkpoint-dir", type=Path, default=default_checkpoint_dir)
+    parser.add_argument("--seed", type=int, default=runtime_config["seed"])
     args = parser.parse_args()
 
     set_seed(args.seed)
-    dataframe = GenomicsParquetDataset.load_parquet(args.metadata_parquet)
-    filtered_df = GenomicsParquetDataset.load_filtered_dataframe(args.metadata_parquet)
-    train_df, val_df, test_df = split_dataframe(filtered_df, seed=args.seed)
+    filtered_df = TokenizedGeneSetDataset.load_training_dataframe(args.input_parquet)
+    train_df, val_df, test_df = split_dataframe(
+        filtered_df,
+        seed=args.seed,
+        train_fraction=split_config["train_fraction"],
+        val_fraction=split_config["val_fraction"],
+        unknown_cancer_type=label_config["unknown_cancer_type"],
+    )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     runs: list[dict[str, object]] = []
     results: dict[str, object] = {
         "model": args.model,
-        "metadata_parquet": str(args.metadata_parquet),
+        "config_path": str(args.config),
+        "input_parquet": str(args.input_parquet),
         "seed": args.seed,
         "device": str(device),
-        "num_rows_before_filtering": len(dataframe),
-        "num_rows_after_filtering": len(filtered_df),
+        "num_rows": len(filtered_df),
+        "rows_by_dataset": summarize_counts(filtered_df, DATASET),
+        "rows_by_cancer_type": summarize_counts(filtered_df, CANCER_TYPE),
         "train_size": len(train_df),
         "val_size": len(val_df),
         "test_size": len(test_df),
         "runs": runs,
     }
 
-    for config in DEFAULT_CONFIGS:
+    training_config = build_training_config(project_config, model_name=args.model)
+
+    for config in (training_config,):
         runs.append(
             train_one_configuration(
                 args.model,
@@ -541,11 +663,15 @@ def main() -> None:
                 test_df,
                 config=config,
                 device=device,
-                output_dir=args.output_dir,
+                checkpoint_dir=args.checkpoint_dir,
+                checkpoint_filename_template=output_config["checkpoint_filename_template"],
             )
         )
 
-    output_path = args.output_dir / f"{args.model}_results.json"
+    output_path = args.output_dir / output_config["results_filename_template"].format(
+        model=args.model,
+        config_name=training_config.name,
+    )
     save_json(results, output_path)
     print(json.dumps(results, indent=2))
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
+
 class MultiheadSelfAttentionBlock(nn.Module):
     def __init__(self, embed_dim: int, num_heads: int, dropout: float = 0.1) -> None:
         super().__init__()
@@ -62,16 +63,7 @@ class PoolingByMultiheadAttention(nn.Module):
 
 
 class SetTransformerEncoder(nn.Module):
-    """
-    Set Transformer encoder for mutation sets.
-
-    gene symbols
-    -> embedding lookup
-    -> stacked self-attention blocks
-    -> pooling by multihead attention
-    -> MLP projection
-    -> 512d embedding
-    """
+    """Set Transformer encoder for mutation sets."""
 
     def __init__(
         self,
@@ -83,7 +75,7 @@ class SetTransformerEncoder(nn.Module):
         hidden_dim: int = 1024,
         output_dim: int = 512,
         pad_index: int = 0,
-        dropout: float = 0.1,
+        dropout: float = 0.2,
     ) -> None:
         super().__init__()
         self.pad_index = pad_index

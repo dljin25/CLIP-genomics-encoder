@@ -3,18 +3,9 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-    
-class DeepSetsEncoder(nn.Module):
-    """
-    Deep Sets encoder for mutation sets.
 
-    gene symbols
-    -> embedding lookup
-    -> elementwise phi network
-    -> permutation-invariant masked pooling
-    -> rho projection network
-    -> 512d embedding
-    """
+class DeepSetsEncoder(nn.Module):
+    """Deep Sets encoder for mutation sets."""
 
     def __init__(
         self,
