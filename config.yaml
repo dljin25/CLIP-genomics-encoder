@@ -5,10 +5,6 @@ project:
 data:
   raw:
     metadata_parquet: data/raw/metadata_genomics.parquet
-    metadata_head_parquet: data/raw/metadata_genomics_head10.parquet
-    icgc_parquet: data/raw/icgc.parquet
-    tcga_parquet: data/raw/tcga.parquet
-    icgc_tsv: data/raw/TableS3_panorama_driver_mutations_ICGC_samples.public.tsv.gz
   schema:
     patient_id_column: patient_id
     gene_symbol_column: gene_symbol_list

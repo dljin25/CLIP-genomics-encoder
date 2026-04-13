@@ -4,7 +4,9 @@ This repository trains a genomics encoder from patient-level mutation sets using
 
 ## Data
 
-Training reads `data/raw/metadata_genomics.parquet` by default. The file is already tokenized:
+Training reads `data/raw/metadata_genomics.parquet` by default. The full file is about 600MB, so it is not stored in normal Git. Keep it in external storage such as Google Drive, Hugging Face Datasets, S3, Zenodo, or Git LFS, then place or symlink it at `data/raw/metadata_genomics.parquet` after cloning.
+
+The file is already tokenized:
 
 - `patient_id`
 - `gene_symbol_list`
@@ -14,7 +16,7 @@ Training reads `data/raw/metadata_genomics.parquet` by default. The file is alre
 - `pathways_altered_list`
 - `pathways_altered_index_list`
 
-`data/raw/metadata_genomics_head10.parquet` is a 10-row preview with the same schema.
+`data/raw/metadata_genomics_head10.parquet` is a 10-row preview with the same schema and is tracked in Git for smoke tests.
 
 The `gene_symbol_index_list` column is used directly as model input. Raw gene ids span `0..33982`, so the trainer shifts gene ids by `+1` internally to reserve input id `0` for padding and uses input id `33984` for the mask token. The prediction head still predicts the original raw gene ids.
 
@@ -47,7 +49,7 @@ The split is controlled by `runtime.seed` in `config.yaml`.
 Run DeepSets from the repository root:
 
 ```bash
-cd /Users/dljin/radiogenomics/CLIP-genomics-encoder && python src/training/train.py
+python src/training/train.py
 ```
 
 Outputs:
@@ -58,5 +60,16 @@ Outputs:
 To use the preview parquet for a smoke test:
 
 ```bash
-cd /Users/dljin/radiogenomics/CLIP-genomics-encoder && python src/training/train.py data/raw/metadata_genomics_head10.parquet
+python src/training/train.py data/raw/metadata_genomics_head10.parquet
+```
+
+For Colab, upload `metadata_genomics.parquet` to Google Drive, mount Drive, and pass that file explicitly:
+
+```python
+from google.colab import drive
+drive.mount("/content/drive")
+```
+
+```bash
+python src/training/train.py /content/drive/MyDrive/metadata_genomics.parquet
 ```
