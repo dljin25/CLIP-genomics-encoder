@@ -5,7 +5,7 @@ import torch.nn as nn
 
 
 class DeepSetsEncoder(nn.Module):
-    """Deep Sets encoder for mutation sets."""
+    """Permutation-invariant Deep Sets encoder for mutation sets."""
 
     def __init__(
         self,
@@ -15,10 +15,15 @@ class DeepSetsEncoder(nn.Module):
         hidden_dim: int = 1024,
         output_dim: int = 512,
         pad_index: int = 0,
-        pooling: str = "mean",
+        pooling: str = "sum",
         dropout: float = 0.1,
     ) -> None:
+        """Initialize the embedding, phi network, pooling, and rho network."""
+
         super().__init__()
+
+        if pooling not in {"sum", "mean"}:
+            raise ValueError("pooling must be either 'sum' or 'mean'.")
 
         self.pooling = pooling
         self.output_dim = output_dim
@@ -49,6 +54,8 @@ class DeepSetsEncoder(nn.Module):
         self._init_parameters()
 
     def _init_parameters(self) -> None:
+        """Initialize embeddings and linear layers."""
+
         nn.init.normal_(self.gene_embedding.weight, mean=0.0, std=0.02)
         with torch.no_grad():
             self.gene_embedding.weight[self.pad_index].zero_()
@@ -63,6 +70,8 @@ class DeepSetsEncoder(nn.Module):
         set_features: torch.Tensor,
         attention_mask: torch.Tensor,
     ) -> torch.Tensor:
+        """Aggregate per-gene features with masked sum or mean pooling."""
+
         mask = attention_mask.unsqueeze(-1).to(dtype=set_features.dtype)
         summed = (set_features * mask).sum(dim=1)
         if self.pooling == "sum":
@@ -75,6 +84,8 @@ class DeepSetsEncoder(nn.Module):
         token_ids: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
+        """Encode a batch of tokenized gene sets."""
+
         return self.encode(token_ids, attention_mask)
 
     def encode(
@@ -82,6 +93,8 @@ class DeepSetsEncoder(nn.Module):
         token_ids: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
+        """Apply phi, permutation-invariant pooling, and rho projection."""
+
         if token_ids.ndim != 2:
             raise ValueError(
                 f"Expected token_ids with shape [batch_size, num_genes], got {tuple(token_ids.shape)}."

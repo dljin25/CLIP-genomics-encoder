@@ -1,94 +1,62 @@
 # Genomics Encoder for CLIP
 
-This repository trains a genomics encoder for mutation sets using a self-supervised masked gene prediction objective.
+This repository trains a genomics encoder from patient-level mutation sets using a masked gene retrieval objective.
 
-## Repository Layout
+## Data
+
+Training reads `data/raw/metadata_genomics.parquet` by default. The file is already tokenized:
+
+- `patient_id`
+- `gene_symbol_list`
+- `gene_symbol_index_list`
+- `variant_id_list`
+- `variant_id_index_list`
+- `pathways_altered_list`
+- `pathways_altered_index_list`
+
+`data/raw/metadata_genomics_head10.parquet` is a 10-row preview with the same schema.
+
+The `gene_symbol_index_list` column is used directly as model input. Raw gene ids span `0..33982`, so the trainer shifts gene ids by `+1` internally to reserve input id `0` for padding and uses input id `33984` for the mask token. The prediction head still predicts the original raw gene ids.
+
+## Model
+
+The model is `deep_sets`. Its encoder follows the Deep Sets form:
 
 ```text
-CLIP-genomics-encoder/
-├── data/
-│   ├── raw/
-│   │   ├── gdc.parquet
-│   │   ├── icgc.parquet
-│   │   └── TableS3_panorama_driver_mutations_ICGC_samples.public.tsv.gz
-│   ├── processed/
-│   │   └── all.parquet
-├── outputs/
-│   ├── runs/
-│   ├── checkpoints/
-├── src/
-│   ├── data/
-│   │   ├── build_gene_vocabulary.py
-│   │   ├── tokenize_gene_dataset.py
-│   │   ├── build_parquet.py
-│   │   ├── convert_tsv_to_parquet.py
-│   ├── models/
-│   │   ├── deep_sets.py
-│   │   ├── set_transformer.py
-│   ├── training/
-│   │   ├── train.py
-├── requirements.txt
+rho(sum(phi(gene_embedding)))
 ```
 
-## Workflow
+The sum aggregation keeps the encoder permutation-invariant.
 
-Project defaults now live in `config.yaml`. Both parquet-building and training read from that file by default, and command-line flags override specific values when needed.
+## Objective
 
-### 1. Build The Pooled Parquet
+For each patient set, training masks a fraction of genes and predicts the missing raw gene ids with binary cross entropy over the gene vocabulary. The main retrieval metric is `recall@10`.
 
-This step:
-- drops rows with missing `variant_sequence`
-- assigns `cancer_type = Kidney-RCC` to every GDC row
-- enriches ICGC rows with `cancer_type` from the bundled `TableS3...` TSV
-- pools both datasets into one processed parquet
+## Splits
 
-Run:
+Rows are patient-level samples. The default split is:
+
+- 70% train
+- 15% validation
+- 15% test
+
+The split is controlled by `runtime.seed` in `config.yaml`.
+
+## Train
+
+Run DeepSets from the repository root:
 
 ```bash
-python src/data/build_parquet.py
+cd /Users/dljin/radiogenomics/CLIP-genomics-encoder && python src/training/train.py
 ```
 
-Default output:
+Outputs:
 
-`data/processed/all.parquet`
+- metrics: `outputs/runs/deep_sets_results.json`
+- encoder checkpoint: `outputs/checkpoints/deep_sets_default_encoder.pt`
 
-The processed parquet contains:
-- `patient_id`
-- `variant_sequence`
-- `dataset`
-- `cancer_type`
-
-### 2. Train the encoder
-
-Training now reads only the processed parquet. It does not load raw GDC or ICGC files directly.
-
-Run:
+To use the preview parquet for a smoke test:
 
 ```bash
-python src/training/train.py
+cd /Users/dljin/radiogenomics/CLIP-genomics-encoder && python src/training/train.py data/raw/metadata_genomics_head10.parquet
 ```
-
-Or point to a custom processed parquet:
-
-```bash
-python src/training/train.py data/processed/all.parquet
-```
-
-Training:
-- builds the gene vocabulary from the train split
-- stratifies train/val/test by `cancer_type`
-- uses patient-level splits
-- writes metrics to `outputs/runs/`
-- writes checkpoints to `outputs/checkpoints/`
-
-## Models
-
-Two mutation-set encoders are available:
-- `src/models/set_transformer.py`
-- `src/models/deep_sets.py`
-
-## Notes
-
-- `src/training/train.py` is the main training entrypoint.
-- `src/data/build_parquet.py` is the main parquet-building entrypoint.
-- Legacy top-level modules in `src/` are kept as thin compatibility shims during the refactor.

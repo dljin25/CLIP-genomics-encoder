@@ -11,6 +11,8 @@ DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config.yaml"
 
 
 def load_project_config(config_path: str | Path | None = None) -> dict[str, Any]:
+    """Load the YAML project config as a dictionary."""
+
     resolved_path = Path(config_path) if config_path is not None else DEFAULT_CONFIG_PATH
     yaml = YAML(typ="safe")
     with resolved_path.open("r", encoding="utf-8") as file:
@@ -21,6 +23,8 @@ def load_project_config(config_path: str | Path | None = None) -> dict[str, Any]
 
 
 def resolve_project_path(path_value: str | Path, *, project_root: Path | None = None) -> Path:
+    """Resolve a config path relative to the project root."""
+
     root = project_root if project_root is not None else PROJECT_ROOT
     path = Path(path_value)
     if path.is_absolute():
