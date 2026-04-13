@@ -435,7 +435,7 @@ def run_epoch(
     *,
     optimizer: torch.optim.Optimizer | None,
     device: torch.device,
-    recall_at_k: int,
+    recall_at_k: int | None,
     pos_weight: torch.Tensor,
 ) -> dict[str, float]:
     """Run one training or evaluation epoch and return aggregate metrics."""
@@ -465,17 +465,19 @@ def run_epoch(
         total_loss += loss.item() * batch_size
         total_examples += batch_size
 
-        all_logits.append(logits.detach().cpu())
-        all_targets.append(targets.detach().cpu())
+        if recall_at_k is not None:
+            all_logits.append(logits.detach().cpu())
+            all_targets.append(targets.detach().cpu())
 
-    return {
-        "loss": total_loss / max(total_examples, 1),
-        "recall_at_k": compute_recall_at_k(
+    metrics = {"loss": total_loss / max(total_examples, 1)}
+    if recall_at_k is not None:
+        metrics["recall_at_k"] = compute_recall_at_k(
             torch.cat(all_logits, dim=0),
             torch.cat(all_targets, dim=0),
             k=recall_at_k,
-        ),
-    }
+        )
+
+    return metrics
 
 
 def train_one_configuration(
@@ -526,7 +528,7 @@ def train_one_configuration(
     )
 
     history: list[dict[str, float]] = []
-    best_val_recall_at_k = float("-inf")
+    best_val_loss = float("inf")
     best_state: dict[str, torch.Tensor] | None = None
     best_checkpoint_metrics: dict[str, float] | None = None
 
@@ -537,7 +539,7 @@ def train_one_configuration(
             train_loader,
             optimizer=optimizer,
             device=device,
-            recall_at_k=config.recall_at_k,
+            recall_at_k=None,
             pos_weight=pos_weight,
         )
         with torch.no_grad():
@@ -546,7 +548,7 @@ def train_one_configuration(
                 val_loader,
                 optimizer=None,
                 device=device,
-                recall_at_k=config.recall_at_k,
+                recall_at_k=None,
                 pos_weight=pos_weight,
             )
 
@@ -554,9 +556,7 @@ def train_one_configuration(
             {
                 "epoch": epoch,
                 "train_loss": train_metrics["loss"],
-                "train_recall_at_k": train_metrics["recall_at_k"],
                 "val_loss": val_metrics["loss"],
-                "val_recall_at_k": val_metrics["recall_at_k"],
             }
         )
 
@@ -565,22 +565,18 @@ def train_one_configuration(
             (
                 f"Epoch {epoch:03d}/{config.epochs} "
                 f"| train_loss={train_metrics['loss']:.4f} "
-                f"| train_recall@{config.recall_at_k}={train_metrics['recall_at_k']:.4f} "
                 f"| val_loss={val_metrics['loss']:.4f} "
-                f"| val_recall@{config.recall_at_k}={val_metrics['recall_at_k']:.4f} "
                 f"| {elapsed_seconds:.1f}s"
             ),
             flush=True,
         )
 
-        if val_metrics["recall_at_k"] > best_val_recall_at_k:
-            best_val_recall_at_k = val_metrics["recall_at_k"]
+        if val_metrics["loss"] < best_val_loss:
+            best_val_loss = val_metrics["loss"]
             best_checkpoint_metrics = {
                 "epoch": float(epoch),
                 "val_loss": val_metrics["loss"],
-                "val_recall_at_k": val_metrics["recall_at_k"],
                 "train_loss": train_metrics["loss"],
-                "train_recall_at_k": train_metrics["recall_at_k"],
             }
             best_state = {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
 
@@ -622,12 +618,10 @@ def train_one_configuration(
         "config": asdict(config),
         "train_stats": train_stats,
         "history": history,
-        "checkpoint_selection_metric": "val_recall_at_k",
+        "checkpoint_selection_metric": "val_loss",
         "best_checkpoint_epoch": int(best_checkpoint_metrics["epoch"]),
         "best_checkpoint_val_loss": best_checkpoint_metrics["val_loss"],
-        "best_checkpoint_val_recall_at_k": best_checkpoint_metrics["val_recall_at_k"],
         "best_checkpoint_train_loss": best_checkpoint_metrics["train_loss"],
-        "best_checkpoint_train_recall_at_k": best_checkpoint_metrics["train_recall_at_k"],
         "test_loss": test_metrics["loss"],
         "test_recall_at_k": test_metrics["recall_at_k"],
         "raw_gene_vocab_size": indexing.raw_vocab_size,
