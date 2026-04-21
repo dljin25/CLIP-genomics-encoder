@@ -4,6 +4,7 @@ import argparse
 import json
 import random
 import sys
+import time
 from dataclasses import asdict
 from pathlib import Path
 
@@ -28,6 +29,7 @@ from src.training.training_config import TrainingConfig, build_training_config
 
 class MaskedGenePredictor(nn.Module):
     def __init__(self, encoder: nn.Module, num_targets: int) -> None:
+        """Initialize the encoder-backed masked gene classifier."""
         super().__init__()
         self.encoder = encoder
         self.classifier = nn.Linear(OUTPUT_DIM, num_targets)
@@ -35,6 +37,7 @@ class MaskedGenePredictor(nn.Module):
         nn.init.constant_(self.classifier.bias, 0)
 
     def forward(self, input_token_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return prediction logits and encoder embeddings for token IDs."""
         embedding = self.encoder(input_token_ids)
         return self.classifier(embedding), embedding
 
@@ -46,6 +49,7 @@ def split_dataframe(
     train_fraction: float,
     val_fraction: float,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Shuffle and split a dataframe into train, validation, and test sets."""
     indices = list(range(len(dataframe)))
     random.Random(seed).shuffle(indices)
     n_train = int(len(indices) * train_fraction)
@@ -62,6 +66,7 @@ def compute_recall_at_ks(
     targets: torch.Tensor,
     ks: tuple[int, ...],
 ) -> dict[int, float]:
+    """Compute mean recall for each requested top-k cutoff."""
     top_k = min(max(ks), logits.size(1))
     top_k_indices = torch.topk(logits, k=top_k, dim=1).indices
     recalls: dict[int, list[float]] = {k: [] for k in sorted(set(ks))}
@@ -81,6 +86,7 @@ def compute_pos_weight(
     indexing: GeneIndexing,
     pos_weight_max: float,
 ) -> torch.Tensor:
+    """Estimate capped positive class weights from gene frequencies."""
     positive_counts = torch.zeros(indexing.raw_vocab_size, dtype=torch.float32)
     for gene_ids in dataframe[gene_index_column]:
         positive_counts[torch.unique(torch.tensor(gene_ids, dtype=torch.long))] += 1.0
@@ -96,6 +102,7 @@ def run_epoch(
     pos_weight: torch.Tensor,
     recall_at_ks: tuple[int, ...] = (),
 ) -> dict[str, float]:
+    """Run one training or evaluation epoch and return aggregate metrics."""
 
     model.train(optimizer is not None)
     total_loss = 0.0
@@ -146,6 +153,7 @@ def train(
     config: TrainingConfig,
     device: torch.device,
 ) -> dict[str, object]:
+    """Train a masked gene predictor and summarize the best run."""
     collate_fn = lambda batch: collate_masked_gene_batch(batch, pad_index=indexing.pad_index)
     train_loader, val_loader, test_loader = (
         DataLoader(
@@ -189,10 +197,19 @@ def train(
     best_state = model.state_dict()
 
     for epoch in range(1, config.epochs + 1):
+        epoch_start = time.perf_counter()
         train_metrics = run_epoch(model, train_loader, optimizer, device, pos_weight)
         with torch.no_grad():
             val_metrics = run_epoch(model, val_loader, None, device, pos_weight)
         history.append({"epoch": epoch, "train_loss": train_metrics["loss"], "val_loss": val_metrics["loss"]})
+        
+        print(
+            f"Epoch {epoch:03d}/{config.epochs} "
+            f"| train_loss={train_metrics['loss']:.4f} "
+            f"| val_loss={val_metrics['loss']:.4f} "
+            f"| {time.perf_counter() - epoch_start:.1f}s",
+            flush=True,
+        )
 
         if val_metrics["loss"] < best_val_loss:
             best_val_loss = val_metrics["loss"]
@@ -231,6 +248,7 @@ def train(
 
 
 def main() -> None:
+    """Parse configuration, train the encoder, and write run results."""
     preliminary_parser = argparse.ArgumentParser(add_help=False)
     preliminary_parser.add_argument("--config", type=Path, default=PROJECT_ROOT / "config.yaml")
     args, _ = preliminary_parser.parse_known_args()
