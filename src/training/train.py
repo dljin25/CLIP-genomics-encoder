@@ -6,6 +6,7 @@ import random
 import time
 from dataclasses import asdict
 from pathlib import Path
+import sys
 
 import pandas as pd
 import torch
@@ -13,6 +14,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.models.deep_sets import DeepSetsEncoder
 from src.project_config import load_project_config, resolve_project_path
