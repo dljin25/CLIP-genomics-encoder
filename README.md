@@ -32,7 +32,7 @@ The sum aggregation keeps the encoder permutation-invariant.
 
 ## Objective
 
-For each patient set, training masks a fraction of genes and predicts the missing raw gene ids with binary cross entropy over the gene vocabulary. The main retrieval metric is `recall@10`.
+For each patient set, training masks a fraction of genes and predicts the missing raw gene ids with binary cross entropy over the gene vocabulary. The main retrieval metrics are `recall@10`, `recall@50`, and `recall@150`.
 
 ## Splits
 

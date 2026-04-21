@@ -1,108 +1,27 @@
-from __future__ import annotations
+from __future__ import annotations 
 
 import argparse
 import json
-import math
 import random
-import sys
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from pathlib import Path
-from typing import Any
 
 import pandas as pd
 import torch
 import torch.nn as nn
-from torch.nn.utils.rnn import pad_sequence
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-MODEL_NAME = "deep_sets"
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.models.deep_sets import DeepSetsEncoder
 from src.project_config import load_project_config, resolve_project_path
-
-
-@dataclass(frozen=True)
-class TrainingConfig:
-    """Resolved hyperparameters for one training run."""
-
-    name: str
-    learning_rate: float
-    weight_decay: float
-    batch_size: int
-    epochs: int
-    recall_at_k: int
-    mask_probability: float
-    max_genes: int
-    embedding_dim: int
-    hidden_dim: int
-    dropout: float
-    num_heads: int
-    num_layers: int
-    output_dim: int
-    pooling: str | None = "sum"
-    pos_weight_max: float = 100.0
-
-
-@dataclass(frozen=True)
-class GeneIndexing:
-    """Maps raw gene ids into model input ids with reserved padding and mask ids."""
-
-    raw_vocab_size: int
-    pad_index: int = 0
-
-    @property
-    def mask_index(self) -> int:
-        """Return the reserved mask token id for model inputs."""
-
-        return self.raw_vocab_size + 1
-
-    @property
-    def input_vocab_size(self) -> int:
-        """Return the embedding vocabulary size including pad and mask ids."""
-
-        return self.raw_vocab_size + 2
-
-    def to_input_ids(self, raw_gene_ids: torch.Tensor) -> torch.Tensor:
-        """Shift raw gene ids so zero can be reserved for padding."""
-
-        return raw_gene_ids + 1
-
-
-def build_training_config(
-    project_config: dict[str, Any],
-    *,
-    model_name: str,
-) -> TrainingConfig:
-    """Merge shared training settings with model-specific overrides."""
-
-    model_config = project_config["model"]
-    training_config = project_config["training"]
-    model_specific = model_config.get(model_name, {})
-    training_overrides = model_specific.get("training_overrides", {})
-    resolved_training = {**training_config, **training_overrides}
-
-    return TrainingConfig(
-        name=resolved_training.get("config_name", "default"),
-        learning_rate=resolved_training["learning_rate"],
-        weight_decay=resolved_training["weight_decay"],
-        batch_size=resolved_training["batch_size"],
-        epochs=resolved_training["epochs"],
-        recall_at_k=resolved_training["recall_at_k"],
-        mask_probability=resolved_training["mask_probability"],
-        max_genes=resolved_training["max_genes"],
-        embedding_dim=resolved_training["embedding_dim"],
-        hidden_dim=resolved_training["hidden_dim"],
-        dropout=resolved_training["dropout"],
-        num_heads=model_specific.get("num_heads", 8),
-        num_layers=model_specific.get("num_layers", 2),
-        output_dim=model_config["output_dim"],
-        pooling=model_specific.get("pooling", "sum") if model_name == "deep_sets" else None,
-        pos_weight_max=resolved_training.get("pos_weight_max", 100.0),
-    )
+from src.training.gene_dataset import (
+    GeneIndexing,
+    MaskedGeneIndexDataset,
+    collate_masked_gene_batch,
+)
+from src.training.training_config import TrainingConfig, build_training_config
 
 
 def set_seed(seed: int) -> None:
@@ -113,46 +32,12 @@ def set_seed(seed: int) -> None:
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
-
-def load_metadata_dataframe(
-    parquet_path: str | Path,
-    *,
-    patient_id_column: str,
-    gene_index_column: str,
-    gene_symbol_column: str | None = None,
-) -> pd.DataFrame:
-    """Load tokenized metadata rows with nonempty patient ids and gene sets."""
-
-    dataframe = pd.read_parquet(Path(parquet_path))
-    required_columns = [patient_id_column, gene_index_column]
-
-    keep_columns = required_columns.copy()
-    if gene_symbol_column is not None and gene_symbol_column in dataframe.columns:
-        keep_columns.append(gene_symbol_column)
-
-    filtered = dataframe.loc[:, keep_columns].copy()
-    filtered[patient_id_column] = filtered[patient_id_column].astype("string").str.strip()
-    filtered = filtered[
-        filtered[patient_id_column].notna()
-        & (filtered[patient_id_column] != "")
-        & filtered[gene_index_column].map(lambda value: hasattr(value, "__len__") and len(value) > 0)
-    ]
-    return filtered.reset_index(drop=True)
-
-
-def infer_gene_indexing(dataframe: pd.DataFrame, gene_index_column: str) -> GeneIndexing:
-    """Infer raw gene vocabulary size from the largest observed gene id."""
-
-    max_gene_index = max(int(gene_id) for gene_ids in dataframe[gene_index_column] for gene_id in gene_ids)
-    return GeneIndexing(raw_vocab_size=max_gene_index + 1)
-
-
 def split_dataframe(
     dataframe: pd.DataFrame,
     *,
     seed: int,
-    train_fraction: float = 0.70,
-    val_fraction: float = 0.15,
+    train_fraction: float,
+    val_fraction: float,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Randomly split patient rows into train, validation, and test sets."""
 
@@ -170,97 +55,6 @@ def split_dataframe(
         dataframe.iloc[test_indices].reset_index(drop=True),
     )
 
-
-class MaskedGeneIndexDataset(Dataset[dict[str, torch.Tensor]]):
-    """Dataset that masks genes from tokenized patient gene sets."""
-
-    def __init__(
-        self,
-        dataframe: pd.DataFrame,
-        *,
-        gene_index_column: str,
-        indexing: GeneIndexing, 
-        max_genes: int,
-        mask_probability: float,
-        random_subsample: bool,
-    ) -> None:
-        """Store the dataframe and masking settings."""
-
-        self.dataframe = dataframe.reset_index(drop=True)
-        self.gene_index_column = gene_index_column
-        self.indexing = indexing
-        self.max_genes = max_genes
-        self.mask_probability = mask_probability
-        self.random_subsample = random_subsample
-
-    def __len__(self) -> int:
-        """Return the number of patient rows."""
-
-        return len(self.dataframe)
-
-    def __getitem__(self, index: int) -> dict[str, torch.Tensor]:
-        """Return one masked gene-set example and its missing-gene target."""
-
-        raw_gene_ids = torch.tensor(
-            self.dataframe.iloc[index][self.gene_index_column],
-            dtype=torch.long,
-        )
-        raw_gene_ids = torch.unique(raw_gene_ids, sorted=True)
-        if raw_gene_ids.numel() == 0:
-            raise ValueError("Encountered an empty gene-index set.")
-
-        if raw_gene_ids.numel() > self.max_genes:
-            if self.random_subsample:
-                keep_positions = torch.randperm(raw_gene_ids.numel())[: self.max_genes]
-                raw_gene_ids = raw_gene_ids[keep_positions]
-            else:
-                raw_gene_ids = raw_gene_ids[: self.max_genes]
-
-        input_token_ids = self.indexing.to_input_ids(raw_gene_ids)
-        num_masked = min(
-            max(1, math.ceil(input_token_ids.numel() * self.mask_probability)),
-            int(input_token_ids.numel()),
-        )
-        masked_positions = torch.randperm(input_token_ids.numel())[:num_masked]
-        masked_gene_ids = raw_gene_ids[masked_positions]
-        input_token_ids = input_token_ids.clone()
-        input_token_ids[masked_positions] = self.indexing.mask_index
-
-        target_multihot = torch.zeros(self.indexing.raw_vocab_size, dtype=torch.float32)
-        target_multihot[masked_gene_ids] = 1.0
-
-        return {
-            "input_token_ids": input_token_ids,
-            "attention_mask": torch.ones_like(input_token_ids),
-            "target_multihot": target_multihot,
-        }
-
-
-def collate_masked_gene_batch(
-    batch: list[dict[str, torch.Tensor]],
-    *,
-    pad_index: int,
-) -> dict[str, torch.Tensor]:
-    """Pad variable-length gene sets and stack multi-hot targets."""
-
-    input_token_ids = pad_sequence(
-        [item["input_token_ids"] for item in batch],
-        batch_first=True,
-        padding_value=pad_index,
-    )
-    attention_mask = pad_sequence(
-        [item["attention_mask"] for item in batch],
-        batch_first=True,
-        padding_value=0,
-    )
-    targets = torch.stack([item["target_multihot"] for item in batch])
-    return {
-        "input_token_ids": input_token_ids,
-        "attention_mask": attention_mask,
-        "target_multihot": targets,
-    }
-
-
 class MaskedGenePredictor(nn.Module):
     """Encoder plus classifier for predicting masked raw gene ids."""
 
@@ -276,11 +70,10 @@ class MaskedGenePredictor(nn.Module):
     def forward(
         self,
         input_token_ids: torch.Tensor,
-        attention_mask: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Return gene logits and the patient-set embedding."""
 
-        embedding = self.encoder(input_token_ids, attention_mask)
+        embedding = self.encoder(input_token_ids)
         logits = self.classifier(embedding)
         return logits, embedding
 
@@ -297,7 +90,6 @@ def build_encoder(
         hidden_dim=config.hidden_dim,
         output_dim=config.output_dim,
         pad_index=indexing.pad_index,
-        pooling=config.pooling or "sum",
         dropout=config.dropout,
     )
 
@@ -345,47 +137,36 @@ def build_dataloaders(
     )
 
 
-def compute_recall_at_k(
+def compute_recall_at_ks(
     logits: torch.Tensor,
     targets: torch.Tensor,
     *,
-    k: int,
-) -> float:
-    """Compute mean recall for masked genes among the top-k predictions."""
+    ks: tuple[int, ...],
+) -> dict[int, float]:
+    """Compute mean recall for masked genes among several top-k cutoffs."""
 
-    if logits.shape != targets.shape:
-        raise ValueError("logits and targets must have the same shape.")
-    if k <= 0:
-        raise ValueError("k must be positive.")
+    if not ks:
+        return {}
 
-    recalls: list[float] = []
-    top_k = min(k, logits.size(1))
+    sorted_ks = tuple(sorted(set(ks)))
+    top_k = min(max(sorted_ks), logits.size(1))
     top_k_indices = torch.topk(logits, k=top_k, dim=1).indices
+    recalls_by_k: dict[int, list[float]] = {k: [] for k in sorted_ks}
 
     for sample_idx in range(targets.size(0)):
         positive_indices = torch.nonzero(targets[sample_idx] > 0, as_tuple=False).flatten()
         if positive_indices.numel() == 0:
             continue
-        retrieved = set(top_k_indices[sample_idx].tolist())
-        hits = sum(1 for index in positive_indices.tolist() if index in retrieved)
-        recalls.append(hits / positive_indices.numel())
+        positive_ids = positive_indices.tolist()
+        for k in sorted_ks:
+            retrieved = set(top_k_indices[sample_idx, : min(k, top_k)].tolist())
+            hits = sum(1 for index in positive_ids if index in retrieved)
+            recalls_by_k[k].append(hits / positive_indices.numel())
 
-    return float(sum(recalls) / len(recalls)) if recalls else 0.0
-
-
-def compute_masked_gene_loss(
-    logits: torch.Tensor,
-    target_multihot: torch.Tensor,
-    *,
-    pos_weight: torch.Tensor,
-) -> torch.Tensor:
-    """Compute weighted BCE loss for masked-gene prediction."""
-
-    return nn.functional.binary_cross_entropy_with_logits(
-        logits,
-        target_multihot,
-        pos_weight=pos_weight,
-    )
+    return {
+        k: float(sum(recalls) / len(recalls)) if recalls else 0.0
+        for k, recalls in recalls_by_k.items()
+    }
 
 
 def compute_pos_weight(
@@ -435,7 +216,7 @@ def run_epoch(
     *,
     optimizer: torch.optim.Optimizer | None,
     device: torch.device,
-    recall_at_k: int | None,
+    recall_at_ks: tuple[int, ...],
     pos_weight: torch.Tensor,
 ) -> dict[str, float]:
     """Run one training or evaluation epoch and return aggregate metrics."""
@@ -450,11 +231,14 @@ def run_epoch(
 
     for batch in dataloader:
         input_token_ids = batch["input_token_ids"].to(device)
-        attention_mask = batch["attention_mask"].to(device)
         targets = batch["target_multihot"].to(device)
 
-        logits, _ = model(input_token_ids, attention_mask)
-        loss = compute_masked_gene_loss(logits, targets, pos_weight=pos_weight)
+        logits, _ = model(input_token_ids)
+        loss = nn.functional.binary_cross_entropy_with_logits( # BCEWithLogitsLoss
+            input=logits, 
+            target=targets, 
+            pos_weight=pos_weight
+        ) 
 
         if optimizer is not None:
             optimizer.zero_grad(set_to_none=True)
@@ -465,22 +249,23 @@ def run_epoch(
         total_loss += loss.item() * batch_size
         total_examples += batch_size
 
-        if recall_at_k is not None:
+        if recall_at_ks:
             all_logits.append(logits.detach().cpu())
             all_targets.append(targets.detach().cpu())
 
     metrics = {"loss": total_loss / max(total_examples, 1)}
-    if recall_at_k is not None:
-        metrics["recall_at_k"] = compute_recall_at_k(
+    if recall_at_ks:
+        recall_metrics = compute_recall_at_ks(
             torch.cat(all_logits, dim=0),
             torch.cat(all_targets, dim=0),
-            k=recall_at_k,
+            ks=recall_at_ks,
         )
+        metrics.update({f"recall_at_{k}": value for k, value in recall_metrics.items()})
 
     return metrics
 
 
-def train_one_configuration(
+def train(
     model_name: str,
     train_df: pd.DataFrame,
     val_df: pd.DataFrame,
@@ -533,13 +318,12 @@ def train_one_configuration(
     best_checkpoint_metrics: dict[str, float] | None = None
 
     for epoch in range(1, config.epochs + 1):
-        epoch_start = time.perf_counter()
         train_metrics = run_epoch(
             model,
             train_loader,
             optimizer=optimizer,
             device=device,
-            recall_at_k=None,
+            recall_at_ks=(),
             pos_weight=pos_weight,
         )
         with torch.no_grad():
@@ -548,7 +332,7 @@ def train_one_configuration(
                 val_loader,
                 optimizer=None,
                 device=device,
-                recall_at_k=None,
+                recall_at_ks=(),
                 pos_weight=pos_weight,
             )
 
@@ -558,17 +342,6 @@ def train_one_configuration(
                 "train_loss": train_metrics["loss"],
                 "val_loss": val_metrics["loss"],
             }
-        )
-
-        elapsed_seconds = time.perf_counter() - epoch_start
-        print(
-            (
-                f"Epoch {epoch:03d}/{config.epochs} "
-                f"| train_loss={train_metrics['loss']:.4f} "
-                f"| val_loss={val_metrics['loss']:.4f} "
-                f"| {elapsed_seconds:.1f}s"
-            ),
-            flush=True,
         )
 
         if val_metrics["loss"] < best_val_loss:
@@ -590,7 +363,7 @@ def train_one_configuration(
             test_loader,
             optimizer=None,
             device=device,
-            recall_at_k=config.recall_at_k,
+            recall_at_ks=config.recall_at_ks,
             pos_weight=pos_weight,
         )
 
@@ -608,7 +381,6 @@ def train_one_configuration(
             "input_vocab_size": indexing.input_vocab_size,
             "pad_index": indexing.pad_index,
             "mask_index": indexing.mask_index,
-            "gene_input_id_shift": 1,
             "output_dim": config.output_dim,
         },
         checkpoint_path,
@@ -623,11 +395,14 @@ def train_one_configuration(
         "best_checkpoint_val_loss": best_checkpoint_metrics["val_loss"],
         "best_checkpoint_train_loss": best_checkpoint_metrics["train_loss"],
         "test_loss": test_metrics["loss"],
-        "test_recall_at_k": test_metrics["recall_at_k"],
         "raw_gene_vocab_size": indexing.raw_vocab_size,
         "input_vocab_size": indexing.input_vocab_size,
         "num_targets": indexing.raw_vocab_size,
         "encoder_checkpoint": str(checkpoint_path),
+        **{
+            f"test_recall_at_{k}": test_metrics[f"recall_at_{k}"]
+            for k in config.recall_at_ks
+        },
     }
 
 
@@ -641,6 +416,21 @@ def save_json(data: dict[str, object], output_path: Path) -> None:
 def main() -> None:
     """Parse CLI arguments and run training."""
 
+    preliminary_parser = argparse.ArgumentParser(add_help=False)
+    preliminary_parser.add_argument(
+        "--config",
+        type=Path,
+        default=PROJECT_ROOT / "config.yaml",
+    )
+    preliminary_args, _ = preliminary_parser.parse_known_args()
+
+    project_config = load_project_config(preliminary_args.config)
+    data_config = project_config["data"]
+    schema_config = data_config["schema"]
+    output_config = project_config["outputs"]
+    runtime_config = project_config["runtime"]
+    split_config = project_config["splits"]
+
     parser = argparse.ArgumentParser(
         description="Train a genomics encoder from tokenized metadata parquet."
     )
@@ -650,15 +440,8 @@ def main() -> None:
         default=PROJECT_ROOT / "config.yaml",
         help="Project config file. Defaults to config.yaml in the repo root.",
     )
-    preliminary_args, _ = parser.parse_known_args()
-    project_config = load_project_config(preliminary_args.config)
-    data_config = project_config["data"]
-    schema_config = data_config["schema"]
-    output_config = project_config["outputs"]
-    runtime_config = project_config["runtime"]
-    split_config = project_config["splits"]
 
-    default_input_parquet = resolve_project_path(data_config["raw"]["metadata_parquet"])
+    default_input_parquet = resolve_project_path(data_config["raw"])
     default_output_dir = resolve_project_path(output_config["runs_dir"])
     default_checkpoint_dir = resolve_project_path(output_config["checkpoints_dir"])
 
@@ -675,51 +458,48 @@ def main() -> None:
     args = parser.parse_args()
 
     set_seed(args.seed)
-    filtered_df = load_metadata_dataframe(
-        args.input_parquet,
-        patient_id_column=schema_config["patient_id_column"],
-        gene_index_column=schema_config["gene_index_column"],
-        gene_symbol_column=schema_config.get("gene_symbol_column"),
-    )
+    df = pd.read_parquet(args.input_parquet)
+
     train_df, val_df, test_df = split_dataframe(
-        filtered_df,
+        df,
         seed=args.seed,
-        train_fraction=split_config["train_fraction"],
-        val_fraction=split_config["val_fraction"],
+        train_fraction=split_config["train"],
+        val_fraction=split_config["val"],
     )
 
-    indexing = infer_gene_indexing(filtered_df, schema_config["gene_index_column"])
+    max_index = max(int(gene_id) for gene_ids in df[schema_config["gene_index_column"]] for gene_id in gene_ids)
+    indexing = GeneIndexing(raw_vocab_size=max_index + 1)
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    training_config = build_training_config(project_config, model_name=MODEL_NAME)
+    training_config = build_training_config(project_config)
+    model_name = project_config["training"]["model_name"]
 
     runs: list[dict[str, object]] = []
     results: dict[str, object] = {
-        "model": MODEL_NAME,
+        "model": model_name,
         "config_path": str(args.config),
         "input_parquet": str(args.input_parquet),
         "gene_index_column": schema_config["gene_index_column"],
         "seed": args.seed,
-        "device": str(device),
-        "num_rows": len(filtered_df),
+        "num_rows": len(df),
         "train_size": len(train_df),
         "val_size": len(val_df),
         "test_size": len(test_df),
         "split_fractions": {
-            "train": split_config["train_fraction"],
-            "val": split_config["val_fraction"],
-            "test": split_config["test_fraction"],
+            "train": split_config["train"],
+            "val": split_config["val"],
+            "test": split_config["test"],
         },
         "raw_gene_vocab_size": indexing.raw_vocab_size,
         "input_vocab_size": indexing.input_vocab_size,
         "pad_index": indexing.pad_index,
         "mask_index": indexing.mask_index,
-        "gene_input_id_shift": 1,
         "runs": runs,
     }
 
     runs.append(
-        train_one_configuration(
-            MODEL_NAME,
+        train(
+            model_name,
             train_df,
             val_df,
             test_df,
@@ -733,7 +513,7 @@ def main() -> None:
     )
 
     output_path = args.output_dir / output_config["results_filename_template"].format(
-        model=MODEL_NAME,
+        model=model_name,
         config_name=training_config.name,
     )
     save_json(results, output_path)
