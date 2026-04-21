@@ -18,7 +18,7 @@ The file is already tokenized:
 
 `data/raw/metadata_genomics_head10.parquet` is a 10-row preview with the same schema and is tracked in Git for smoke tests.
 
-The `gene_symbol_index_list` column is used directly as model input. Raw gene ids span `0..33982`, so the trainer shifts gene ids by `+1` internally to reserve input id `0` for padding and uses input id `33984` for the mask token. The prediction head still predicts the original raw gene ids.
+The `gene_symbol_index_list` column is used directly as model input. Raw gene ids span `0..33982`, so the trainer shifts gene ids by `+2` internally to reserve input id `0` for padding and uses input id `1` for the mask token. The prediction head still predicts the original raw gene ids.
 
 ## Model
 
@@ -34,13 +34,22 @@ The sum aggregation keeps the encoder permutation-invariant.
 
 For each patient set, training masks a fraction of genes and predicts the missing raw gene ids with binary cross entropy over the gene vocabulary. The main retrieval metrics are `recall@10`, `recall@50`, and `recall@150`.
 
+The recall cutoffs are configured in `config.yaml`:
+
+```yaml
+training:
+  recall_at_ks: [10, 50, 150]
+```
+
+Each recall value is computed on the held-out test split from the same model checkpoint selected by validation loss.
+
 ## Splits
 
 Rows are patient-level samples. The default split is:
 
-- 70% train
-- 15% validation
-- 15% test
+- 80% train
+- 10% validation
+- 10% test
 
 The split is controlled by `runtime.seed` in `config.yaml`.
 
@@ -56,6 +65,12 @@ Outputs:
 
 - metrics: `outputs/runs/deep_sets_results.json`
 - encoder checkpoint: `outputs/checkpoints/deep_sets_default_encoder.pt`
+
+The metrics JSON includes separate fields for each retrieval cutoff:
+
+- `test_recall_at_10`
+- `test_recall_at_50`
+- `test_recall_at_150`
 
 To use the preview parquet for a smoke test:
 
